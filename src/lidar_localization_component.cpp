@@ -33,11 +33,13 @@ PCLLocalization::PCLLocalization(const rclcpp::NodeOptions & options)
   declare_parameter("initial_pose_qy", 0.0);
   declare_parameter("initial_pose_qz", 0.0);
   declare_parameter("initial_pose_qw", 1.0);
+  declare_parameter("odom_threshold", 0.01);
+  declare_parameter("imu_threshold", 0.05);
   declare_parameter("use_odom", false);
   declare_parameter("use_imu", false);
   declare_parameter("enable_debug", false);
-  declare_parameter("enable_timer_publishing", false);
-  declare_parameter("pose_publish_frequency", 10.0);
+  declare_parameter("enable_timer_publishing", true);
+  declare_parameter("pose_publish_frequency", 30.0);
 }
 
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
@@ -61,6 +63,7 @@ CallbackReturn PCLLocalization::on_activate(const rclcpp_lifecycle::State &)
 {
   RCLCPP_INFO(get_logger(), "Activating");
 
+  fitness_score_pub_->on_activate();
   pose_pub_->on_activate();
   path_pub_->on_activate();
   initial_map_pub_->on_activate();
@@ -136,6 +139,7 @@ CallbackReturn PCLLocalization::on_deactivate(const rclcpp_lifecycle::State &)
 {
   RCLCPP_INFO(get_logger(), "Deactivating");
 
+  fitness_score_pub_->on_deactivate();
   pose_pub_->on_deactivate();
   path_pub_->on_deactivate();
   initial_map_pub_->on_deactivate();
@@ -150,6 +154,7 @@ CallbackReturn PCLLocalization::on_cleanup(const rclcpp_lifecycle::State &)
   initial_pose_sub_.reset();
   initial_map_pub_.reset();
   path_pub_.reset();
+  fitness_score_pub_.reset();
   pose_pub_.reset();
   odom_sub_.reset();
   cloud_sub_.reset();
@@ -210,6 +215,9 @@ void PCLLocalization::initializeParameters()
   get_parameter("enable_debug", enable_debug_);
   get_parameter("enable_timer_publishing", enable_timer_publishing_);
   get_parameter("pose_publish_frequency", pose_publish_frequency_);
+  get_parameter("odom_threshold", odom_threshold_);
+  get_parameter("imu_threshold", imu_threshold_);
+  tf_updated_ = false;
 
   RCLCPP_INFO(get_logger(),"global_frame_id: %s", global_frame_id_.c_str());
   RCLCPP_INFO(get_logger(),"odom_frame_id: %s", odom_frame_id_.c_str());
@@ -238,6 +246,10 @@ void PCLLocalization::initializePubSub()
 {
   RCLCPP_INFO(get_logger(), "initializePubSub");
 
+    fitness_score_pub_ = create_publisher<std_msgs::msg::Float64>(
+    "fitness_score",
+    rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+
   pose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
     "pcl_pose",
     rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
@@ -259,7 +271,7 @@ void PCLLocalization::initializePubSub()
     std::bind(&PCLLocalization::mapReceived, this, std::placeholders::_1));
 
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
-    "odom", rclcpp::SensorDataQoS(),
+    "odom",rclcpp::QoS(rclcpp::KeepLast(1)),
     std::bind(&PCLLocalization::odomReceived, this, std::placeholders::_1));
 
   cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -336,6 +348,7 @@ void PCLLocalization::initialPoseReceived(const geometry_msgs::msg::PoseWithCova
     return;
   }
   initialpose_recieved_ = true;
+  tf_updated_ = true;
   corrent_pose_with_cov_stamped_ptr_ = msg;
   pose_pub_->publish(*corrent_pose_with_cov_stamped_ptr_);
 
@@ -374,6 +387,10 @@ void PCLLocalization::mapReceived(const sensor_msgs::msg::PointCloud2::SharedPtr
 
 void PCLLocalization::odomReceived(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
 {
+
+  if (abs(msg->twist.twist.linear.x) > odom_threshold_ || abs(msg->twist.twist.linear.y) > odom_threshold_ ||
+        abs(msg->twist.twist.angular.z) > odom_threshold_){ tf_updated_= true;}
+
   if (!use_odom_) {return;}
   RCLCPP_INFO(get_logger(), "odomReceived");
 
@@ -421,6 +438,10 @@ void PCLLocalization::odomReceived(const nav_msgs::msg::Odometry::ConstSharedPtr
 
 void PCLLocalization::imuReceived(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
 {
+
+  if ( abs(msg->linear_acceleration.x) > imu_threshold_ || abs(msg->linear_acceleration.y) > imu_threshold_ ||
+    abs(msg->angular_velocity.z) > imu_threshold_){ tf_updated_= true;}
+
   if (!use_imu_) {return;}
 
   sensor_msgs::msg::Imu tf_converted_imu;
@@ -534,12 +555,18 @@ void PCLLocalization::cloudReceived(const sensor_msgs::msg::PointCloud2::ConstSh
 
   bool has_converged = registration_->hasConverged();
   double fitness_score = registration_->getFitnessScore();
+       ////////////////////////
+  std_msgs::msg::Float64 fitness_msg;
+  fitness_msg.data = fitness_score;
+  fitness_score_pub_->publish(fitness_msg);
+      ////////////////////////
   if (!has_converged) {
     RCLCPP_WARN(get_logger(), "The registration didn't converge.");
     return;
   }
   if (fitness_score > score_threshold_) {
     RCLCPP_WARN(get_logger(), "The fitness score is over %lf.", score_threshold_);
+//    return;
   }
 
   Eigen::Matrix4f final_transformation = registration_->getFinalTransformation();
@@ -547,12 +574,17 @@ void PCLLocalization::cloudReceived(const sensor_msgs::msg::PointCloud2::ConstSh
   Eigen::Quaterniond quat_eig(rot_mat);
   geometry_msgs::msg::Quaternion quat_msg = tf2::toMsg(quat_eig);
 
-  corrent_pose_with_cov_stamped_ptr_->header.stamp = msg->header.stamp;
-  corrent_pose_with_cov_stamped_ptr_->header.frame_id = global_frame_id_;
-  corrent_pose_with_cov_stamped_ptr_->pose.pose.position.x = static_cast<double>(final_transformation(0, 3));
-  corrent_pose_with_cov_stamped_ptr_->pose.pose.position.y = static_cast<double>(final_transformation(1, 3));
-  corrent_pose_with_cov_stamped_ptr_->pose.pose.position.z = static_cast<double>(final_transformation(2, 3));
-  corrent_pose_with_cov_stamped_ptr_->pose.pose.orientation = quat_msg;
+    if (tf_updated_){
+      corrent_pose_with_cov_stamped_ptr_->header.stamp = msg->header.stamp;
+      corrent_pose_with_cov_stamped_ptr_->header.frame_id = global_frame_id_;
+      corrent_pose_with_cov_stamped_ptr_->pose.pose.position.x = static_cast<double>(final_transformation(0, 3));
+      corrent_pose_with_cov_stamped_ptr_->pose.pose.position.y = static_cast<double>(final_transformation(1, 3));
+      corrent_pose_with_cov_stamped_ptr_->pose.pose.position.z = static_cast<double>(final_transformation(2, 3));
+      corrent_pose_with_cov_stamped_ptr_->pose.pose.orientation = quat_msg;
+    }
+    tf_updated_ = false;
+
+
     
   // publish here if timer is not enabled
 
@@ -568,7 +600,7 @@ void PCLLocalization::cloudReceived(const sensor_msgs::msg::PointCloud2::ConstSh
     map_to_base_link_stamped.transform.translation.z = static_cast<double>(final_transformation(2, 3));
     map_to_base_link_stamped.transform.rotation = quat_msg;
     if (!enable_map_odom_tf_) {
-      broadcaster_.sendTransform(map_to_base_link_stamped);
+        broadcaster_.sendTransform(map_to_base_link_stamped);
     } else {
       tf2::Transform map_to_base_link_tf;
       tf2::fromMsg(map_to_base_link_stamped.transform, map_to_base_link_tf);
@@ -577,6 +609,8 @@ void PCLLocalization::cloudReceived(const sensor_msgs::msg::PointCloud2::ConstSh
       try {
         odom_to_base_link_msg = tfbuffer_.lookupTransform(
           odom_frame_id_, base_frame_id_, msg->header.stamp, rclcpp::Duration::from_seconds(0.1));
+//      odom_to_base_link_msg = tfbuffer_.lookupTransform(
+//        odom_frame_id_, base_frame_id_,this->get_clock()->now(), rclcpp::Duration::from_seconds(0.1));
       } catch (tf2::TransformException & ex) {
         RCLCPP_WARN(
           this->get_logger(), "Could not get transform %s to %s: %s",
@@ -592,6 +626,9 @@ void PCLLocalization::cloudReceived(const sensor_msgs::msg::PointCloud2::ConstSh
       map_to_odom_stamped.header.frame_id = global_frame_id_;
       map_to_odom_stamped.child_frame_id = odom_frame_id_;
       map_to_odom_stamped.transform = tf2::toMsg(map_to_odom_tf);
+      map_to_odom_stamped.transform.translation.x =  std::round(map_to_odom_stamped.transform.translation.x  * 100) /100;
+      map_to_odom_stamped.transform.translation.y =  std::round(map_to_odom_stamped.transform.translation.y  * 100) /100;
+      map_to_odom_stamped.transform.translation.z = 0.0;  //2D mode
       broadcaster_.sendTransform(map_to_odom_stamped);
     }
 
@@ -681,7 +718,7 @@ void PCLLocalization::timerPublishPose()
     map_to_odom_stamped.header.frame_id = global_frame_id_;
     map_to_odom_stamped.child_frame_id = odom_frame_id_;
     map_to_odom_stamped.transform = tf2::toMsg(map_to_odom_tf);
-    
-    broadcaster_.sendTransform(map_to_odom_stamped);
+      broadcaster_.sendTransform(map_to_odom_stamped);
+
   }
 }

@@ -27,6 +27,7 @@
 #include "sensor_msgs/msg/imu.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
+#include "std_msgs/msg/float64.hpp"
 
 #include <pclomp/ndt_omp.h>
 #include <pclomp/ndt_omp_impl.hpp>
@@ -34,6 +35,7 @@
 #include <pclomp/voxel_grid_covariance_omp_impl.hpp>
 #include <pclomp/gicp_omp.h>
 #include <pclomp/gicp_omp_impl.hpp>
+#include <cmath>
 
 #include "lidar_localization/lidar_undistortion.hpp"
 
@@ -70,6 +72,8 @@ public:
 
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::ConstSharedPtr
     initial_pose_sub_;
+  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64>::SharedPtr
+    fitness_score_pub_;
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
     pose_pub_;
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr
@@ -117,6 +121,10 @@ public:
   double initial_pose_qy_;
   double initial_pose_qz_;
   double initial_pose_qw_;
+
+  double odom_threshold_;
+  double imu_threshold_;
+  double tf_updated_;
 
   bool use_odom_{false};
   double last_odom_received_time_;

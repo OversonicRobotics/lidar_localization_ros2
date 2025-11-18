@@ -3,36 +3,32 @@ import os
 import launch
 import launch.actions
 import launch.events
-
 import launch_ros
 import launch_ros.actions
 import launch_ros.events
-
+import lifecycle_msgs.msg
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch_ros.actions import LifecycleNode
 from launch_ros.actions import Node
 
-import lifecycle_msgs.msg
-
-from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
-
     ld = launch.LaunchDescription()
 
     lidar_tf = launch_ros.actions.Node(
         name='lidar_tf',
         package='tf2_ros',
         executable='static_transform_publisher',
-        arguments=['0','0','0','0','0','0','1','base_link','velodyne']
-        )
+        arguments=['0', '0', '0', '0', '0', '0', '1', 'base_link', 'body']
+    )
 
     imu_tf = launch_ros.actions.Node(
         name='imu_tf',
         package='tf2_ros',
         executable='static_transform_publisher',
-        arguments=['0','0','0','0','0','0','1','base_link','imu_link']
-        )
+        arguments=['0', '0', '0', '0', '0', '0', '1', 'base_link', 'imu_link']
+    )
 
     localization_param_dir = launch.substitutions.LaunchConfiguration(
         'localization_param_dir',
@@ -47,7 +43,7 @@ def generate_launch_description():
         package='lidar_localization_ros2',
         executable='lidar_localization_node',
         parameters=[localization_param_dir],
-        remappings=[('/cloud','/velodyne_points')],
+        remappings=[('/cloud', '/livox/lidar'), ('/odom', '/odom_in'), ('/map', '/map_cloud')],
         output='screen')
 
     to_inactive = launch.actions.EmitEvent(
@@ -74,7 +70,7 @@ def generate_launch_description():
     from_inactive_to_active = launch.actions.RegisterEventHandler(
         launch_ros.event_handlers.OnStateTransition(
             target_lifecycle_node=lidar_localization,
-            start_state = 'configuring',
+            start_state='configuring',
             goal_state='inactive',
             entities=[
                 launch.actions.LogInfo(msg="-- Inactive --"),
@@ -90,7 +86,7 @@ def generate_launch_description():
     ld.add_action(from_inactive_to_active)
 
     ld.add_action(lidar_localization)
-    ld.add_action(lidar_tf)
+    # ld.add_action(lidar_tf)
     ld.add_action(to_inactive)
 
     return ld

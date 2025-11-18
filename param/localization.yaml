@@ -1,7 +1,7 @@
 /**:
     ros__parameters:
       registration_method: "NDT_OMP"
-      score_threshold: 2.0
+      score_threshold: 0.5
       ndt_resolution: 1.0
       ndt_step_size: 0.1
       ndt_num_threads: 4
@@ -20,13 +20,15 @@
       initial_pose_qx: 0.0
       initial_pose_qy: 0.0
       initial_pose_qz: 0.0
-      initial_pose_qw: 0.0
+      initial_pose_qw: 1.0
+      odom_threshold: 0.01
+      imu_threshold: 0.1
       use_odom: false
       use_imu: false
       enable_debug: false
-      enable_map_odom_tf: false
+      enable_map_odom_tf: true
       global_frame_id: map
       odom_frame_id: odom
       base_frame_id: base_link
-      enable_timer_publishing: false
+      enable_timer_publishing: true
       pose_publish_frequency: 30.0
